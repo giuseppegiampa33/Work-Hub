@@ -1,0 +1,392 @@
+# Work-Hub – Specifiche complete, architettura e prompt di implementazione
+
+## 1. Vision e obiettivi
+
+Work-Hub è un SaaS multi-tenant per la gestione operativa di piccoli team: clienti, ticket, attività pianificate, calendario settimanale e consuntivazione ore. Ogni azienda è un’organizzazione (tenant) con i propri utenti, ruoli, clienti e dati isolati.
+
+Obiettivi:
+
+- Più aziende usano la stessa piattaforma in modo sicuro e isolato.
+- Gestione strutturata di richieste e attività (ticket, priorità, stati, assegnazioni).
+- Pianificazione del lavoro su calendario settimanale (lun–ven, 08:00–18:00).
+- Registrazione ore per cliente, attività e ticket.
+- Dashboard e report per monitorare carico, scadenze e ore per cliente/attività.
+- UI curata, coerente, responsive, con motion design fluido.
+- Prestazioni stabili nel tempo, senza degradazione con l’aumento di dati.
+
+## 2. Architettura multi-tenant e sicurezza
+
+### 2.1 Modello tenant
+
+- Ogni azienda è un’organizzazione:
+  - Tabella `organizations`: `id`, `name`, `slug`, `logo_url`, `created_at`, `updated_at`.
+- Gli utenti hanno account personale:
+  - Tabella `users` (gestita da Supabase Auth + profilo custom): `id`, `email`, `name`, `avatar_url`.
+- Membership:
+  - Tabella `organization_members`: `id`, `organization_id`, `user_id`, `role`, `created_at`.
+- Ogni risorsa ha `organization_id`:
+  - `clients`, `tickets`, `calendar_events`, `time_entries`, `ticket_comments`, `ticket_attachments`, ecc.
+
+### 2.2 Isolamento e autorizzazione
+
+- Ogni query deve filtrare per `organization_id` del tenant attivo.
+- Policy RLS (Row Level Security) su Supabase:
+  - Abilitate su tutte le tabelle dati.
+  - Regole del tipo:
+    - L’utente è membro dell’organizzazione?
+    - Il ruolo dell’utente permette questa operazione?
+- Controlli lato server (API route / server actions):
+  - Verificano `active_org_id` dalla sessione.
+  - Controllano appartenenza e permessi prima di leggere/scrivere.
+
+Principi:
+
+- Nessuna query “globale” senza `organization_id`.
+- Nessun bypass di RLS se non in funzioni server strettamente controllate (es. creazione inviti).
+- Audit log per operazioni critiche (cambi ruoli, rimozione membri, eliminazione dati).
+
+### 2.3 Prestazioni e scalabilità
+
+Per evitare appesantimenti nel tempo:
+
+- Indicizzazione:
+  - Indici su `organization_id` per tutte le tabelle principali.
+  - Indici composti per query frequenti, es. `(organization_id, status)`, `(organization_id, client_id, created_at)`.
+- Paginazione:
+  - Liste ticket, clienti, eventi calendario e ore sempre paginate (cursor-based o offset).
+- Limiti di default:
+  - Dashboard: numero massimo di widget con query pesanti.
+  - Calendario: caricamento per settimana/mese, non “tutto”.
+- Query ottimizzate:
+  - Evitare N+1 query (usare join o batch dove possibile).
+  - Usare viste materializzate o query aggregate solo se necessarie e ben indicizzate.
+- Frontend:
+  - Virtualizzazione per liste lunghe (es. react-window o equivalenti).
+  - Memoizzazione selettiva di componenti pesanti.
+  - TanStack Query con cache ben configurata (staleTime, gcTime).
+- Storage:
+  - Allegati su Supabase Storage, non in DB.
+  - Limiti di dimensione per file e numero di allegati per ticket.
+
+## 3. Autenticazione, onboarding e inviti
+
+### 3.1 Flussi
+
+- Signup:
+  - Utente crea account personale (nome, email, password).
+- Onboarding:
+  - Crea nuova organizzazione (diventa Owner/Admin), oppure
+  - Si unisce a un’organizzazione tramite invito.
+- Login:
+  - Email + password personali.
+  - Se l’utente ha più organizzazioni, sceglie il contesto attivo.
+  - Sessione con `user_id` e `active_org_id`.
+- Inviti:
+  - Admin/Manager inserisce email e assegna ruolo.
+  - Il sistema crea un record `invites`:
+    - `id`, `organization_id`, `email`, `role`, `token`, `expires_at`, `created_at`.
+  - Genera link di invito: `https://work-hub.vercel.app/invite/:token`.
+  - MVP: link mostrato a video o copiato, inviato manualmente dall’admin.
+  - Futuro: integrazione con Resend/SendGrid per email automatiche.
+
+### 3.2 Ruoli e permessi
+
+Ruoli per organizzazione:
+
+- **Owner / Admin**
+  - Gestisce organizzazione, membri, ruoli, impostazioni, vede tutto.
+- **Manager**
+  - Crea e assegna ticket, pianifica attività, vede report, gestisce clienti.
+- **Operatore**
+  - Crea/aggiorna ticket, registra ore, vede clienti e attività assegnate.
+- **Guest**
+  - Vede solo ticket e clienti a cui è esplicitamente aggiunto.
+
+Permessi esempio (da mappare su ruoli):
+
+- `tickets:create`, `tickets:assign`, `tickets:delete`
+- `clients:manage`
+- `calendar:plan`
+- `time:log`
+- `reports:view`
+- `members:invite`, `members:remove`
+
+Ogni controllo di autorizzazione verifica:
+
+1. La risorsa appartiene all’organizzazione attiva?
+2. L’utente è membro di quell’organizzazione?
+3. Il ruolo dell’utente permette questa azione?
+
+## 4. Dominio funzionale
+
+### 4.1 Clienti
+
+- Tabella `clients`:
+  - `id`, `organization_id`, `name`, `email`, `phone`, `address`, `notes`, `created_at`, `updated_at`.
+- Funzionalità:
+  - Lista clienti con filtri e ricerca.
+  - Dettaglio cliente con ticket correlati, ore totali, note.
+
+### 4.2 Ticket
+
+- Tabella `tickets`:
+  - `id`, `organization_id`, `client_id`, `creator_id`, `assignee_id`, `title`, `description`, `status`, `priority`, `due_date`, `created_at`, `updated_at`.
+- Stati:
+  - Nuovo, Da pianificare, Pianificato, In lavorazione, In attesa cliente, In attesa interna, Risolto, Chiuso, Annullato.
+- Priorità:
+  - Critica, Alta, Normale, Bassa.
+- Funzionalità:
+  - Lista ticket con filtri (stato, priorità, cliente, assegnatario, intervallo date).
+  - Dettaglio ticket con:
+    - Commenti (`ticket_comments`).
+    - Allegati (`ticket_attachments`).
+    - Timeline di cambiamenti stato/assegnatario.
+    - Eventi calendario collegati.
+    - Ore lavorate collegate.
+
+### 4.3 Calendario
+
+- Tabella `calendar_events`:
+  - `id`, `organization_id`, `owner_id`, `ticket_id?`, `client_id`, `category_id`, `activity_type_id`, `title`, `description`, `start`, `end`, `is_planned`, `is_completed`, `created_at`, `updated_at`.
+- Vista:
+  - Settimanale, lun–ven, 08:00–18:00.
+  - Filtri per persona, cliente, categoria, stato.
+- Distinzione:
+  - Eventi pianificati vs eventi consuntivati.
+  - Possibilità di trasformare un evento pianificato in consuntivo con ore effettive.
+
+### 4.4 Ore lavorate
+
+- Tabella `time_entries`:
+  - `id`, `organization_id`, `user_id`, `client_id`, `ticket_id?`, `category_id`, `activity_type_id`, `date`, `start_time`, `end_time`, `duration_minutes`, `description`, `is_billable`, `created_at`, `updated_at`.
+- Funzionalità:
+  - Registrazione ore da calendario o da form dedicato.
+  - Report ore per cliente, categoria, utente, periodo.
+
+### 4.5 Categorie e tipi di attività
+
+- Tabella `categories`:
+  - `id`, `organization_id`, `name`, `color`, `icon`, `created_at`.
+- Tabella `activity_types`:
+  - `id`, `organization_id`, `category_id`, `name`, `default_duration_minutes`, `created_at`.
+- Esempi:
+  - Categoria: “Sviluppo / modifica software”.
+  - Tipi: “Flusso giornaliero”, “Flusso mensile”, “Manutenzione PC cliente”.
+
+## 5. Design system e direzione visiva
+
+### 5.1 Linguaggio visivo
+
+Linguaggio: **operational editorial SaaS**.
+
+- Flat design evoluto, sobria profondità, rigore editoriale, componenti data-dense.
+- Atmosfera: professionale, calma, precisa, contemporanea, leggermente calda, altamente operativa.
+- Nessun morfismo dominante (no glassmorphism, no neomorphism, no skeuomorphism).
+- Estetica da prodotto B2B vendibile, non da template AI.
+
+### 5.2 Palette e token
+
+Colori semantici, definiti come design tokens:
+
+- Canvas: off-white caldo (`#F6F6F3` o simile).
+- Surface: bianco pulito.
+- Testo: antracite morbido (`#1C1C1A` o simile).
+- Brand accent: verde petrolio / verde bosco sobrio.
+- Warning: ambra/terracotta desaturata.
+- Error: rosso mattone controllato.
+- Success: verde naturale non neon.
+- Info: blu inchiostro.
+
+Token da definire in CSS/JS:
+
+- Colori: `--color-canvas`, `--color-surface`, `--color-text`, `--color-brand`, ecc.
+- Spaziatura: scala 4px/8px (`--space-1`, `--space-2`, …).
+- Radius: `--radius-xs`, `--radius-sm`, `--radius-md`, `--radius-lg`.
+- Ombre: quasi invisibili, solo per popover, menu, drawer, modal.
+- Tipografia: `--font-sans`, scale per title, heading, body, meta, label.
+- Motion: `--duration-fast`, `--duration-standard`, `--ease-standard`.
+
+Nessun hardcoding di colori/misure nei componenti quando esiste un token.
+
+### 5.3 Tipografia
+
+- Font principale: **Plus Jakarta Sans** (o Inter come fallback).
+- Scala tipografica per:
+  - Page title
+  - Section title
+  - Table heading
+  - Body
+  - Metadata
+  - Label
+  - Caption
+- Numeri tabulari per durate, ore e date.
+- Line-height e spaziatura ottimizzati per lettura prolungata.
+
+### 5.4 Regole formali
+
+- Border radius: 6px, 8px, 12px, max 16px per grandi overlay.
+- Bordi sottili e discreti.
+- Ombre quasi invisibili, solo per popover, menu, drawer, modal.
+- Grid e spacing basati su scala 4px / 8px.
+- Icone Lucide con dimensioni e stroke coerenti.
+- Layout desktop-first, ottimizzato per lavoro quotidiano.
+- Tablet adattivo, mobile focalizzato su consultazione e inserimento rapido.
+- Safe-area support per web app mobile.
+
+### 5.5 Divieti assoluti
+
+- No glassmorphism come linguaggio dominante.
+- No neomorphism.
+- No gradienti blu/viola da template AI.
+- No blob decorativi, sfondi animati, effetti futuristici.
+- No ombre grandi e diffuse sulle card.
+- No card enormi per liste/ticket/tabelle.
+- No border-radius eccessivi ovunque.
+- No animazioni bounce, scale aggressivi, parallax, decorazioni continue.
+- No dati fittizi decorativi o lorem ipsum.
+- No cloni diretti di Notion/Linear/Stripe.
+
+## 6. Componenti e pagine
+
+### 6.1 App shell
+
+- Sidebar collassabile con navigazione:
+  - Dashboard
+  - Ticket
+  - Calendario
+  - Clienti
+  - Report
+  - Impostazioni
+- Top bar con:
+  - Ricerca globale (clienti, ticket, persone).
+  - Notifiche (in-app, future email).
+  - Selettore organizzazione (se l’utente ha più tenant).
+  - Menu profilo (profilo, impostazioni, logout).
+
+### 6.2 Componenti UI
+
+- Buttons: primary, secondary, ghost, destructive, icon-only, loading, disabled.
+- Inputs, textarea, select, combobox, date input, time input, checkbox, radio, switch.
+- Badge per stato ticket e priorità (con testo oltre al colore).
+- Avatars e assegnatari.
+- Data table con:
+  - Toolbar filtri, ricerca, sort.
+  - Hover, selected row.
+  - Empty, loading e error state.
+- Ticket row + detail drawer laterale.
+- Tabs, dropdown, popover, tooltip, command palette.
+- Modal e confirm dialog.
+- Toast con azione undo.
+- Card solo per sintesi dashboard.
+- Calendar weekly grid 08:00–18:00, lun–ven.
+- Eventi calendario con categorie e priorità.
+- Timeline attività ticket.
+- Skeleton loader, empty state, error state, offline state.
+
+### 6.3 Pagine
+
+- Auth:
+  - Login
+  - Signup
+  - Recupera password
+  - Invita membri (solo per ruoli abilitati)
+- Onboarding:
+  - Crea organizzazione
+  - Unisciti a organizzazione (tramite invito)
+- Dashboard
+- Ticket:
+  - Lista ticket
+  - Dettaglio ticket (drawer o pagina)
+  - Nuovo ticket
+- Calendario
+- Clienti:
+  - Lista clienti
+  - Dettaglio cliente
+- Report:
+  - Ore per cliente
+  - Ore per categoria/attività
+  - Ticket per stato/priorità
+- Impostazioni:
+  - Organizzazione (nome, logo, membri, ruoli)
+  - Profilo utente (nome, avatar, password)
+
+## 7. Motion design
+
+- Libreria: **Framer Motion** (o Motion for React).
+- Principi:
+  - Micro-interazioni: 120–200ms.
+  - Transizioni di stato (hover, focus, active, disabled): rapide e sobrie.
+  - Drawer: slide laterale 220–260ms, ease-out.
+  - Modal: fade + translate max 8px, 200–240ms.
+  - Page transitions: fade + micro-translate 180–220ms.
+  - Hover su righe/pulsanti: variazione colore/ombra lieve, mai scale aggressivi.
+  - Rispetto di `prefers-reduced-motion`.
+  - Motion funzionale, mai decorativo.
+  - Animazioni GPU-accelerate e interruptible dove possibile.
+  - Curve di easing coerenti in tutta l’app.
+
+## 8. Accessibilità
+
+- Contrasto minimo WCAG AA.
+- Focus visibile e coerente per tutti i componenti da tastiera.
+- Nessuna informazione affidata solo al colore.
+- Label accessibili per controlli icon-only.
+- Modali e drawer con focus management corretto.
+- Stati completi per componenti interattive: hover, focus, active, disabled, loading, error, empty.
+
+## 9. Responsive
+
+- Desktop:
+  - Esperienza completa, massima densità informativa.
+- Tablet:
+  - Layout adattato, sidebar collassabile, calendario leggibile.
+- Mobile:
+  - Consultazione ticket, calendario semplificato, registrazione rapida ore.
+  - Menu inferiore o burger a seconda dello spazio.
+  - Safe-area per notch e barre di sistema.
+  - Touch target almeno 44x44 px.
+- Nessun break di layout a larghezze intermedie.
+- Test esplicito su breakpoint comuni (360, 414, 768, 1024, 1280, 1440).
+
+## 10. Stack tecnologico
+
+- **Frontend**: Next.js 15+ (App Router) + TypeScript.
+- **Styling**: Tailwind CSS + shadcn/ui.
+- **Animazioni**: Framer Motion.
+- **Data fetching**: TanStack Query.
+- **Form e validazioni**: Zod + React Hook Form.
+- **Auth e database**: Supabase (Auth, PostgreSQL, Storage, Realtime, RLS).
+- **Deploy**: Vercel.
+
+## 11. Implementazione tecnica e prestazioni
+
+- Organizzazione modulare e leggibile del codice.
+- File di configurazione per:
+  - Design tokens (colori, font, spacing, radius, shadows, motion).
+  - Ruoli e permessi.
+  - Stati ticket e priorità.
+- Nessun hardcoding di colori/misure quando esiste un token.
+- Policy RLS per isolamento tenant.
+- Indicizzazione corretta su `organization_id` e campi di filtro frequenti.
+- Paginazione su liste lunghe.
+- Cache TanStack Query configurata per ridurre query inutili.
+- Virtualizzazione per liste molto lunghe (ticket, ore).
+- Monitoring delle performance (Lighthouse, Web Vitals) e refactoring periodico.
+
+## 12. Variabili d’ambiente
+
+### 12.1 Pubbliche (NEXT_PUBLIC_*)
+
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `NEXT_PUBLIC_APP_NAME` (es. `Work-Hub`)
+- `NEXT_PUBLIC_SITE_URL` (es. `https://work-hub.vercel.app`)
+
+### 12.2 Server-side
+
+- `SUPABASE_SERVICE_ROLE_KEY`
+- Opzionali future:
+  - `RESEND_API_KEY` o `SENDGRID_API_KEY` (email)
+  - `STRIPE_SECRET_KEY` (pagamenti)
+
+Nessuna variabile segreta deve essere esposta nel frontend.

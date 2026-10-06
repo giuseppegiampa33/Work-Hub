@@ -1,0 +1,155 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Base layer. Everything here is either a token-driven element default or a
+ * primitive that cannot be expressed as a Tailwind utility.
+ * CSS custom properties (--color-*, --radius-*, --duration-*, …) are injected
+ * on :root by the Tailwind plugin in tailwind.config.ts.
+ */
+@layer base {
+  * {
+    @apply border-line;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-canvas text-fg antialiased;
+    font-family: var(--font-sans);
+    font-feature-settings: 'cv11' 1, 'ss01' 1;
+    /* Avoids the iOS rubber-band flash of a different colour behind the app. */
+    overscroll-behavior-y: none;
+  }
+
+  /* Durations, hours and dates must stay vertically aligned in tables. */
+  [data-numeric],
+  table :where(td, th)[data-numeric='true'] {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum' 1;
+  }
+
+  :focus-visible {
+    @apply outline-none;
+    box-shadow:
+      0 0 0 2px rgb(var(--color-surface)),
+      0 0 0 4px rgb(var(--color-focus) / 0.5);
+    border-radius: var(--radius-sm);
+  }
+
+  /* Native controls follow the brand instead of the OS accent. */
+  :root {
+    accent-color: rgb(var(--color-brand));
+    color-scheme: light;
+  }
+
+  ::selection {
+    background-color: rgb(var(--color-brand) / 0.16);
+  }
+
+  ::placeholder {
+    color: rgb(var(--color-fg-disabled));
+  }
+
+  /* Quiet, inline scrollbars — the app is dense and scrollbars are everywhere. */
+  @supports selector(::-webkit-scrollbar) {
+    ::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background-color: rgb(var(--color-line-strong) / 0.7);
+      border: 3px solid transparent;
+      background-clip: content-box;
+      border-radius: var(--radius-full);
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background-color: rgb(var(--color-line-strong));
+    }
+  }
+
+  @supports not selector(::-webkit-scrollbar) {
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: rgb(var(--color-line-strong)) transparent;
+    }
+  }
+}
+
+@layer utilities {
+  /* Mobile web-app safe areas (notch, home indicator, status bar). */
+  .pt-safe {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .pl-safe {
+    padding-left: env(safe-area-inset-left, 0px);
+  }
+  .pr-safe {
+    padding-right: env(safe-area-inset-right, 0px);
+  }
+  .h-safe-bottom {
+    height: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom, 0px));
+  }
+  .min-h-screen-safe {
+    min-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+  }
+
+  /* Hides content visually but keeps it for assistive technology. */
+  .sr-only-focusable:not(:focus):not(:focus-within) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .scrollbar-none {
+    scrollbar-width: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Promotes an element to its own layer for transform/opacity animation. */
+  .gpu {
+    transform: translate3d(0, 0, 0);
+    backface-visibility: hidden;
+  }
+}
+
+/*
+ * Reduced motion: every transition and animation collapses to an instant
+ * state change. Motion in Work-Hub is always informative, never required.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Print: reports and ticket details should produce a clean sheet. */
+@media print {
+  [data-print='hide'] {
+    display: none !important;
+  }
+  body {
+    background: #fff;
+  }
+}
